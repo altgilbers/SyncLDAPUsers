@@ -1,7 +1,0 @@
-<?php
-$ldap_host="ldap.example.net";
-$ldap_rdn="cn=account,ou=unit,dc=example,dc=net";
-$ldap_password="passwordZ";
-$filter="(uid=*)"
-$fields=array("uid","mail","givenName","sn");
-?>
