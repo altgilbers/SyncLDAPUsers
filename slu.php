@@ -32,6 +32,8 @@ function SLU_admin_init(){
 			$option_name='slu_ldap_rdn');
         register_setting($option_group='slu_ldap_connection_group',
 			$option_name='slu_ldap_pass');
+        register_setting($option_group='slu_ldap_connection_group',
+			$option_name='slu_cron_enable');
 
 
         add_settings_field($id='slu_ldap_host',
@@ -49,6 +51,11 @@ function SLU_admin_init(){
 			$callback='slu_ldap_pass_cb',
 			$page='slu-options',
 			$section='slu_ldap_connection_settings');
+        add_settings_field($id='slu_cron_enable',
+			$title='Enable cron task',
+			$callback='slu_cron_enable_cb',
+			$page='slu-options',
+			$section='slu_ldap_connection_settings');
 }
 
 
@@ -61,6 +68,12 @@ function slu_ldap_rdn_cb(){
 function slu_ldap_pass_cb(){
 	echo "<input type='password' name='slu_ldap_pass' value='".get_site_option('slu_ldap_pass')."'/>";
 }
+function slu_cron_enable_cb(){
+	echo "<input type='checkbox' name='slu_cron_enable' ";
+	if(get_site_option('slu_cron_enable')=="true")
+		echo "checked";
+	echo ">";
+}
 
 
 
@@ -68,6 +81,13 @@ function slu_ldap_pass_cb(){
 add_action('network_admin_edit_slu-options', 'slu_save_network_options');
 function slu_save_network_options(){
 	
+	$redirect_query_string_array=array( 'page' => 'slu-options');
+        $error_msg="";
+
+	if(!is_super_admin()){
+		exit;
+	}
+
 	if(isset($_POST["slu_ldap_host"])){
 		update_site_option("slu_ldap_host",$_POST["slu_ldap_host"]);
 	}
@@ -80,11 +100,35 @@ function slu_save_network_options(){
 	else{
 		sync_log("pass not set");
 	}
-	sync_log("saving network options?");
+	sync_log("Saving network options...");
 
+	if(isset($_POST["slu_cron_enable"])){
+		sync_log("slu_cron_enable=".$_POST["slu_cron_enable"]);
+                update_site_option("slu_cron_enable","true");
+	        if (wp_next_scheduled ( 'slu_sync_event' )) {
+                	wp_clear_scheduled_hook('slu_sync_event');
+                }
+		wp_schedule_event(time(), 'hourly', 'slu_sync_event');
 
-	$redirect_url=add_query_arg(
-        array( 'page' => 'slu-options', 'updated' => 'true' ),
+	}
+	else
+	{
+		update_site_option("slu_cron_enable","false");
+		wp_clear_scheduled_hook('slu_sync_event');
+	}
+
+	
+	//check LDAP connection info:
+	$ldap_host=get_site_option('slu_ldap_host');
+	$ldap_rdn=get_site_option('slu_ldap_rdn');
+	$ldap_password=get_site_option('slu_ldap_pass');
+	sync_log("verifying connection to ".$ldap_host);
+	$L=ldap_connect("ldaps://".$ldap_host);
+	$R=ldap_bind($L,$ldap_rdn,$ldap_password);
+	if(!$R){
+		$redirect_query_string_array['error']=urlencode(ldap_error($L));
+	}
+	$redirect_url=add_query_arg($redirect_query_string_array,
         (is_multisite() ? network_admin_url( 'admin.php' ) : admin_url( 'admin.php' ))
 	);
 
@@ -99,8 +143,13 @@ function slu_save_network_options(){
 function slu_init(){
 
 	echo "<h1>Sync LDAP Users</h1>";
+	if($_GET['updated']=="true")
+		echo "<div id='message' class='updated'>updated</div>";
+	if(isset($_GET['error']))
+		echo "<div id='message' class='error'>".urldecode($_GET['error'])."</div>";
 
 	?>
+	
 	<form action="/wp-admin/network/edit.php?action=slu-options" method="post">
 	<?php
 	settings_fields('slu_ldap_connection_group');
@@ -137,6 +186,9 @@ function slu_deactivate(){
 	sync_log("Deactivating Plugin.. removing scheduled task");
 	wp_clear_scheduled_hook('slu_sync_event');
 	delete_site_option('slu_ldap_pass');
+	delete_site_option('slu_ldap_rdn');
+	delete_site_option('slu_ldap_host');
+	delete_site_option('slu_updated_through');
 }
 
 
@@ -321,14 +373,13 @@ function slu_sync_users(){
 		// bookkeeping.... keep track of how far we got, so we know where to pick up next time.
 		update_site_option('slu_updated_through',$ldap_modifyTimeStamp);
 
-		if(microtime(true)-$before > 55)
-		{
-			sync_log("bailing after 55 seconds");
+		if(microtime(true)-$before > ini_get('max_execution_time')-2){
+			sync_log("bailing before max_execution_time");
 			$bailed=true;
 			break;
 		}
 	}
-//	$end=microtime(true);
+
 	sync_log($added_users." users added");
 	sync_log($modified_users." users modified");
 	sync_log($untouched_users." users untouched");
