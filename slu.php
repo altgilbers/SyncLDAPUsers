@@ -8,6 +8,7 @@
  */
 
 
+
 add_action('network_admin_menu', 'SLU_plugin_setup_menu');
 function SLU_plugin_setup_menu(){
         add_menu_page( $page_title='SLU Plugin Page',
@@ -18,6 +19,8 @@ function SLU_plugin_setup_menu(){
 }
 
 
+// The settings API doesn't fully work with plugins on the network admin page,
+// the form UI portion works, but the server-side processing portion does not
 add_action('admin_init','SLU_admin_init');
 function SLU_admin_init(){
 
@@ -78,6 +81,7 @@ function slu_cron_enable_cb(){
 
 
 // this action runs when /wp-admin/network/edit.php is called with ?action=slu-options
+// could use some validation...
 add_action('network_admin_edit_slu-options', 'slu_save_network_options');
 function slu_save_network_options(){
 	
@@ -87,6 +91,8 @@ function slu_save_network_options(){
 	if(!is_super_admin()){
 		exit;
 	}
+
+        sync_log("Saving network options...");
 
 	if(isset($_POST["slu_ldap_host"])){
 		update_site_option("slu_ldap_host",$_POST["slu_ldap_host"]);
@@ -100,7 +106,6 @@ function slu_save_network_options(){
 	else{
 		sync_log("pass not set");
 	}
-	sync_log("Saving network options...");
 
 	if(isset($_POST["slu_cron_enable"])){
 		sync_log("slu_cron_enable=".$_POST["slu_cron_enable"]);
@@ -177,9 +182,6 @@ register_deactivation_hook(__FILE__, 'slu_deactivate');
 
 function slu_activate() {
          sync_log("Activating plugin.");
-//   if (! wp_next_scheduled ( 'slu_sync_event' )) {
-//	wp_schedule_event(time(), 'hourly', 'slu_sync_event');
-//    }
 }
 
 function slu_deactivate(){
@@ -199,6 +201,9 @@ add_action('slu_sync_event', 'slu_sync_users');
 
 // This function is the where the syncing actually happens
 function slu_sync_users(){ 
+
+	// this is to prevent WordPress from sending emails to users whose email addresses have changed
+	add_filter( 'send_email_change_email', '__return_false' );
 
 	$ldap_host=get_site_option('slu_ldap_host');
 	$ldap_rdn=get_site_option('slu_ldap_rdn');
@@ -247,25 +252,20 @@ function slu_sync_users(){
 	$mail_filter="mail=*";
 	$start_filter="modifyTimeStamp>=".$sync_window_start.".0Z";
 	$end_filter="modifyTimeStamp<=".$sync_window_end.".0Z";
-	//$eligible_filter="objectclass=inetorgperson)(!(tuftseduatamseligibility=locked*))(!(tuftseduatamseligibility=former*))(!(tuftseduatamseligibility=ineligible))";
 
 	array_push($filters, $uid_filter);
 	array_push($filters, $mail_filter);
 	array_push($filters, $start_filter);
 	array_push($filters, $end_filter);
-	//array_push($filters, $eligible_filter);
 
 
 	$fields=array("uid","mail","givenName","sn","modifyTimeStamp");
 	
-	
-
 	$filter="(&";
 	foreach($filters as $f)
 		$filter.="(".$f.")";
 	$filter.=")";
 	
-
 	echo "<p>filter: ".$filter."</p>\n";
 	$begin=$before=microtime(true);
 
@@ -290,6 +290,8 @@ function slu_sync_users(){
 
 
 	$before=microtime(true);
+
+	// Loop through all entries returned for our filter
 	for ($i=0; $i<count($entries); $i++)
 	{
 		$user=array();
@@ -322,7 +324,7 @@ function slu_sync_users(){
 			if ($user->last_name!==$ldap_sn)
 			{
                                 $update_user[last_name]=$ldap_sn;
-                                $log_message.="last name mismatch ";
+                                $log_message.="last_name mismatch ";
 				$dirty=TRUE;
 			}
 			if($dirty)
@@ -388,14 +390,15 @@ function slu_sync_users(){
 
 
 	//  If we're not caught up to current day, we'll reschedule another run immediately
+	//  If there are periods with no LDAP updates, this could cause some problems...
 	$updated_through=get_site_option('slu_updated_through');
 	//sync_log("updated_through: ".convertLdapTimeStamp($updated_through)." time()-1day: ".(time()-3600*24));
 	if( convertLdapTimeStamp($updated_through) < time()-3600*24 )
 	{
 		sync_log("Not finished..  rescheduling task to resume processing..");
 		if (wp_next_scheduled ( 'slu_sync_event' )) {
-		wp_clear_scheduled_hook('slu_sync_event');
-		wp_schedule_event(time(), 'hourly', 'slu_sync_event');
+			wp_clear_scheduled_hook('slu_sync_event');
+			wp_schedule_event(time(), 'hourly', 'slu_sync_event');
 		}
 	}
 	else
