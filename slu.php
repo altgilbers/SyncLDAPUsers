@@ -260,12 +260,15 @@ function slu_sync_users(){
 
 
 	$fields=array("uid","mail","givenName","sn","modifyTimeStamp");
+	array_push($fields,"tuftsEduAtamsEligibility");
 	
 	$filter="(&";
 	foreach($filters as $f)
 		$filter.="(".$f.")";
 	$filter.=")";
 	
+	$filter="(uid=ialtgi01)";
+
 	echo "<p>filter: ".$filter."</p>\n";
 	$begin=$before=microtime(true);
 
@@ -302,6 +305,7 @@ function slu_sync_users(){
 		$ldap_sn=$entries[$i]["sn"][0];
 		$ldap_mail=$entries[$i]["mail"][0];
 		$ldap_modifyTimeStamp=$entries[$i]["modifytimestamp"][0];
+		$ldap_eligibility=$entries[$i]["tuftseduatamseligibility"][0];  // beware of PHP LDAP downcasing attribute names
 
 		// check to see if user currently exists in the WP DB
 		$user=get_user_by('login',$ldap_uid);
@@ -309,6 +313,17 @@ function slu_sync_users(){
 		$log_message="";
 		if($user)   // if user already exists, we can update fields to match LDAP record
 		{
+			// if a user has a "former*", locked, or ineligible  eligibility status from LDAP, we'll record that in 
+			// a user meta option "lus_user_status"
+
+	                $lus_user_status=get_user_meta($user->ID,'lus_user_status',true);
+			if (preg_match("/^former*|locked|ineligible/",$ldap_eligibility))
+				$ldap_user_status="inactive";
+			else
+				$ldap_user_status="active";
+			if($lus_user_status !== $ldap_user_status)
+				update_user_meta($user->ID,'lus_user_status',$ldap_user_status);
+
 			if ($user->user_email!==$ldap_mail)
 			{
                                 $update_user[user_email]=$ldap_mail;
