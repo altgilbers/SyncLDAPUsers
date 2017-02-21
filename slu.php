@@ -470,5 +470,17 @@ function convertLdapTimeStamp($timestamp){
 	return $timestamp;
     }
 
+// adding user status to network users listing
+add_filter('wpmu_users_columns', 'add_user_status');
+function add_user_status($columns) {
+    $columns['status'] = 'Status';
+    return $columns;
+}
+add_filter('manage_users_custom_column','add_user_status_column',10,3);
+function add_user_status_column($output,$column_name,$user_id)
+{
+        return "<strong>".get_user_meta($user_id,'lus_user_status',true)."</strong>";
+}
+
 
 ?>
