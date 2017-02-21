@@ -196,6 +196,9 @@ function slu_deactivate(){
 	delete_site_option('slu_ldap_rdn');
 	delete_site_option('slu_ldap_host');
 	delete_site_option('slu_updated_through');
+
+	// should clean up user_meta settings as well
+
 }
 
 
@@ -312,17 +315,17 @@ function slu_sync_users(){
 		if($user)   // if user already exists, we can update fields to match LDAP record
 		{
 			// if a user has a "former*", locked, or ineligible  eligibility status from LDAP, we'll record that in 
-			// a user meta option "lus_user_status"
+			// a user meta option "slu_user_status"
 
-	                $lus_user_status=get_user_meta($user->ID,'lus_user_status',true);
+	                $slu_user_status=get_user_meta($user->ID,'slu_user_status',true);
 			if (preg_match("/^former*|locked|ineligible/",$ldap_eligibility))
 				$ldap_user_status="inactive";
 			else
 				$ldap_user_status="active";
-			if($lus_user_status !== $ldap_user_status)
+			if($slu_user_status !== $ldap_user_status)
 			{
-				update_user_meta($user->ID,'lus_user_status',$ldap_user_status);
-				update_user_meat($user->ID,'lus_user_update_time',$ldap_modifyTimeStamp);
+				update_user_meta($user->ID,'slu_user_status',$ldap_user_status);
+				update_user_meat($user->ID,'slu_user_update_time',$ldap_modifyTimeStamp);
 				sync_log($user->user_login." status updated to: ".$ldap_user_status);
 			}
 
@@ -358,7 +361,7 @@ function slu_sync_users(){
 				{
 					sync_log($user->user_login." updated - ".$log_message);
 					echo "<p>".$user->user_login." updated - ".$log_message."</p>\n";
-					update_user_meta($update_user[ID],'lus_user_update_time',$ldap_modifyTimeStamp);
+					update_user_meta($update_user[ID],'slu_user_update_time',$ldap_modifyTimeStamp);
 					$modified_users++;
 				}
 			}
@@ -383,8 +386,8 @@ function slu_sync_users(){
 				{
 				        $added_users++;
 					sync_log($ldap_uid." created");
-      		                        update_user_meta($new_user_id,'lus_user_status',$ldap_user_status);
-					update_user_meta($new_user_id,'lus_user_update_time',$ldap_modifyTimeStamp);
+      		                        update_user_meta($new_user_id,'slu_user_status',$ldap_user_status);
+					update_user_meta($new_user_id,'slu_user_update_time',$ldap_modifyTimeStamp);
 				}
 				else
 				{
@@ -483,7 +486,7 @@ function add_user_status($columns) {
 add_filter('manage_users_custom_column','add_user_status_column',10,3);
 function add_user_status_column($output,$column_name,$user_id)
 {
-        return "<strong>".get_user_meta($user_id,'lus_user_status',true)."</strong>";
+        return "<strong>".get_user_meta($user_id,'slu_user_status',true)."</strong>";
 }
 
 
