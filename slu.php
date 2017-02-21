@@ -88,6 +88,7 @@ function slu_save_network_options(){
 	$redirect_query_string_array=array( 'page' => 'slu-options');
         $error_msg="";
 
+	// superadmins shouldn't ever see this, but if somehow they do, bail...
 	if(!is_super_admin()){
 		exit;
 	}
@@ -236,10 +237,10 @@ function slu_sync_users(){
 	$ldap_conn=ldap_connect("ldaps://".$ldap_host)
 		or die("Could not connect to $ldap_host");
 	if (ldap_bind($ldap_conn,$ldap_rdn,$ldap_password)){
-		echo "successful bind\n";
+		//echo "successful bind\n";
 	}
 	else{
-		echo "bind failed\n";
+		//echo "bind failed\n";
 		sync_log("bind failed");
 	}
 
@@ -287,23 +288,22 @@ function slu_sync_users(){
 	$failed_users=0;
 	$bailed=false;
 
+	// important to sort these records, so we process them sequentially according to modifyTimeStamp
 	usort($entries,"ldap_sort_comparer");
-
-
 	$before=microtime(true);
 
-	// Loop through all entries returned for our filter
-	for ($i=0; $i<count($entries); $i++)
+	// Loop through all entries returned for our filter   foreach would be better here...
+	foreach ($entries as $entry)
 	{
 		$user=array();
 		$update_user=array();
 
-		$ldap_uid=$entries[$i]["uid"][0];
-		$ldap_givenName=$entries[$i]["givenname"][0];  //beware of PHP LDAP downcasing attribute names
-		$ldap_sn=$entries[$i]["sn"][0];
-		$ldap_mail=$entries[$i]["mail"][0];
-		$ldap_modifyTimeStamp=$entries[$i]["modifytimestamp"][0];
-		$ldap_eligibility=$entries[$i]["tuftseduatamseligibility"][0];  // beware of PHP LDAP downcasing attribute names
+		$ldap_uid=$entry["uid"][0];
+		$ldap_givenName=$entry["givenname"][0];  //beware of PHP LDAP downcasing attribute names
+		$ldap_sn=$entry["sn"][0];
+		$ldap_mail=$entry["mail"][0];
+		$ldap_modifyTimeStamp=$entry["modifytimestamp"][0];
+		$ldap_eligibility=$entry["tuftseduatamseligibility"][0];  // beware of PHP LDAP downcasing attribute names
 
 		// check to see if user currently exists in the WP DB
 		$user=get_user_by('login',$ldap_uid);
@@ -322,7 +322,8 @@ function slu_sync_users(){
 			if($lus_user_status !== $ldap_user_status)
 			{
 				update_user_meta($user->ID,'lus_user_status',$ldap_user_status);
-				sync_log($user->user_login." now marked as: ".$ldap_user_status);
+				update_user_meat($user->ID,'lus_user_update_time',$ldap_modifyTimeStamp);
+				sync_log($user->user_login." status updated to: ".$ldap_user_status);
 			}
 
 			if ($user->user_email!==$ldap_mail && !empty($ldap_mail) )  // don't update the email if it's blank
@@ -357,7 +358,7 @@ function slu_sync_users(){
 				{
 					sync_log($user->user_login." updated - ".$log_message);
 					echo "<p>".$user->user_login." updated - ".$log_message."</p>\n";
-					update_user_meta($update_user[ID],'lus_update_time',$ldap_modifyTimeStamp);
+					update_user_meta($update_user[ID],'lus_user_update_time',$ldap_modifyTimeStamp);
 					$modified_users++;
 				}
 			}
@@ -371,7 +372,7 @@ function slu_sync_users(){
 		{
 			if(!empty($ldap_mail))
 			{
-				echo "<p>".$entries[$i]["uid"][0]." has no WP account</p>\n";
+				echo "<p>".$entry["uid"][0]." has no WP account</p>\n";
 				$new_user=array(
 						"user_login"=>$ldap_uid,
 						"user_email"=>$ldap_mail,
@@ -383,7 +384,7 @@ function slu_sync_users(){
 				        $added_users++;
 					sync_log($ldap_uid." created");
       		                        update_user_meta($new_user_id,'lus_user_status',$ldap_user_status);
-					update_user_meta($new_user_id,'lus_update_time',$ldap_modifyTimeStamp);
+					update_user_meta($new_user_id,'lus_user_update_time',$ldap_modifyTimeStamp);
 				}
 				else
 				{
@@ -400,6 +401,8 @@ function slu_sync_users(){
 		// bookkeeping.... keep track of how far we got, so we know where to pick up next time.
 		update_site_option('slu_updated_through',$ldap_modifyTimeStamp);
 
+
+		// if a particular batch of users is large and might not finish before execution timeout, we can gracefully stop and pick up next time
 		if(microtime(true)-$before > ini_get('max_execution_time')-2){
 			sync_log("bailing before max_execution_time");
 			$bailed=true;
@@ -420,8 +423,8 @@ function slu_sync_users(){
 
 
 
-	//  If we're not caught up to current day, we'll reschedule another run immediately
-	//  If there are periods with no LDAP updates, this could cause some problems...
+	//  If we're not caught up to current day, we'll reschedule another run in 10 seconds (10 seconds just in case 
+	//  there are long periods with no LDAP updates, which couldsome problems...
 	$updated_through=get_site_option('slu_updated_through');
 	//sync_log("updated_through: ".convertLdapTimeStamp($updated_through)." time()-1day: ".(time()-3600*24));
 	if( convertLdapTimeStamp($updated_through) < time()-3600*24 )
@@ -429,7 +432,7 @@ function slu_sync_users(){
 		sync_log("Not finished..  rescheduling task to resume processing..");
 		if (wp_next_scheduled ( 'slu_sync_event' )) {
 			wp_clear_scheduled_hook('slu_sync_event');
-			wp_schedule_event(time(), 'hourly', 'slu_sync_event');
+			wp_schedule_event(time()+10, 'hourly', 'slu_sync_event');
 		}
 	}
 	else
@@ -439,6 +442,7 @@ function slu_sync_users(){
 
 }
 
+// logging to a separate file with timestamps
 function sync_log($msg)
 {
  	$sync_log_location=__DIR__."/logs/slu_ldap_sync.log";
