@@ -4,7 +4,7 @@
    Description: synchronize user accounts between LDAP and WordPress
    Author: Ian Altgilbers  ian@altgilbers.com
    Source: https://github.com/altgilbers/SyncLDAPUsers
-   Version: 0.1
+   Version: 0.5
  */
 
 
@@ -168,6 +168,10 @@ function slu_init(){
 	<?php echo get_site_option('slu_updated_through','uninitialized');?></p><?php 
 	echo "<p>Next scheduled run at approx: ".date("Y-m-d H:i:s T",wp_next_scheduled ( 'slu_sync_event' ))."</p>";
 
+        if(isset($_GET['slu-reset']))
+        {
+                delete_site_option('slu_updated_through');
+	}
 	if(isset($_GET['slu-process']))
 	{
 		slu_sync_users();
@@ -218,7 +222,6 @@ function slu_sync_users(){
 	$sync_window_start=get_site_option('slu_updated_through');
 	if($sync_window_start==false)  // first run, so we'll set the start to the begining of time and the end to two years ago
 	{
-		echo "<p>First run...</p>";
 		sync_log("First run...");
 		$sync_window_start="19700101000000";
 		$sync_window_end=date("YmdHis",time()-3600*24*365*2);
@@ -230,10 +233,6 @@ function slu_sync_users(){
 		$sync_window_end=date("YmdHis",$sync_window_end_time);
         }
 	
-        echo "<p>Start time:  ".$sync_window_start."</p>";
-	echo "<p>End time:  ".$sync_window_end."</p>";
-
-
 	$ldap_conn=ldap_connect("ldaps://".$ldap_host)
 		or die("Could not connect to $ldap_host");
 	if (ldap_bind($ldap_conn,$ldap_rdn,$ldap_password)){
@@ -241,7 +240,7 @@ function slu_sync_users(){
 	}
 	else{
 		echo "bind failed\n";
-		error_log("bind failed");
+		sync_log("bind failed");
 	}
 
 	// timezone set needed to get formatted time for LDAP filter
@@ -249,25 +248,24 @@ function slu_sync_users(){
 
 	$filters=array();
 	$uid_filter="uid=*";
-	$mail_filter="mail=*";
+	//$mail_filter="mail=*";
 	$start_filter="modifyTimeStamp>=".$sync_window_start.".0Z";
 	$end_filter="modifyTimeStamp<=".$sync_window_end.".0Z";
 
 	array_push($filters, $uid_filter);
-	array_push($filters, $mail_filter);
+	// excluding the mail filter, because we need to see everyone in order to mark old accounts as inactive
+	//array_push($filters, $mail_filter);
 	array_push($filters, $start_filter);
 	array_push($filters, $end_filter);
 
 
-	$fields=array("uid","mail","givenName","sn","modifyTimeStamp");
-	array_push($fields,"tuftsEduAtamsEligibility");
+	$fields=array("uid","mail","givenName","sn","modifyTimeStamp","tuftsEduAtamsEligibility");
 	
 	$filter="(&";
 	foreach($filters as $f)
 		$filter.="(".$f.")";
 	$filter.=")";
 	
-	$filter="(uid=ialtgi01)";
 
 	echo "<p>filter: ".$filter."</p>\n";
 	$begin=$before=microtime(true);
@@ -280,7 +278,7 @@ function slu_sync_users(){
 	echo "<p>".($after-$before)." seconds to get LDAP results.</p>";
 
 	sync_log($entries["count"]." entries returned in ".($after-$before)."s from LDAP for filter: ".$filter);
-
+	$ldap_result_count=$entries["count"];
 	//unset count, because it gets in the way when sorting/processing the entries
 	unset($entries['count']);
 	$modified_users=0;
@@ -322,9 +320,12 @@ function slu_sync_users(){
 			else
 				$ldap_user_status="active";
 			if($lus_user_status !== $ldap_user_status)
+			{
 				update_user_meta($user->ID,'lus_user_status',$ldap_user_status);
+				sync_log($user->user_login." now marked as: ".$ldap_user_status);
+			}
 
-			if ($user->user_email!==$ldap_mail)
+			if ($user->user_email!==$ldap_mail && !empty($ldap_mail) )  // don't update the email if it's blank
 			{
                                 $update_user[user_email]=$ldap_mail;
 				$log_message.="email mismatch ";
@@ -368,22 +369,31 @@ function slu_sync_users(){
 		}
 		else  // user doesn't exist in WP DB
 		{
-			echo "<p>".$entries[$i]["uid"][0]." has no WP account</p>\n";
-			$new_user=array(
-					"user_login"=>$ldap_uid,
-					"user_email"=>$ldap_mail,
-					"first_name"=>$ldap_givenName,
-					"last_name"=>$ldap_sn);
-			$new_user_id=wp_insert_user($new_user);
-			if ( ! is_wp_error($new_user_id) )
+			if(!empty($ldap_mail))
 			{
-			        $added_users++;
-				sync_log($ldap_uid." created");
-				update_user_meta($new_user_id,'lus_update_time',$ldap_modifyTimeStamp);
+				echo "<p>".$entries[$i]["uid"][0]." has no WP account</p>\n";
+				$new_user=array(
+						"user_login"=>$ldap_uid,
+						"user_email"=>$ldap_mail,
+						"first_name"=>$ldap_givenName,
+						"last_name"=>$ldap_sn);
+				$new_user_id=wp_insert_user($new_user);
+				if ( ! is_wp_error($new_user_id) )
+				{
+				        $added_users++;
+					sync_log($ldap_uid." created");
+      		                        update_user_meta($new_user_id,'lus_user_status',$ldap_user_status);
+					update_user_meta($new_user_id,'lus_update_time',$ldap_modifyTimeStamp);
+				}
+				else
+				{
+					sync_log($ldap_uid." not added: ".$new_user_id->get_error_message());
+				}
 			}
 			else
 			{
-				sync_log($ldap_uid." not added: ".$new_user_id->get_error_message());
+				sync_log($ldap_uid." not added:  No email address provided by LDAP");
+	
 			}
 		}
 
@@ -395,6 +405,12 @@ function slu_sync_users(){
 			$bailed=true;
 			break;
 		}
+	}
+	// if there were no entries, we need to update 'slu_updated_through' to the end-time, since it wouldn't have been updated by a user-update
+	if($ldap_result_count==0  && convertLdapTimeStamp($sync_window_end)<time())
+	{
+		sync_log("no entries between ".$sync_window_start." and ".$sync_window_end.".");
+                update_site_option('slu_updated_through',$sync_window_end);
 	}
 
 	sync_log($added_users." users added");
@@ -453,5 +469,6 @@ function convertLdapTimeStamp($timestamp){
         $timestamp = mktime($hour, $minute, $second, $month, $day, $year);
 	return $timestamp;
     }
+
 
 ?>
