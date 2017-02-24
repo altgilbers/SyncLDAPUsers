@@ -8,7 +8,6 @@
  */
 
 
-
 add_action('network_admin_menu', 'SLU_plugin_setup_menu');
 function SLU_plugin_setup_menu(){
         add_menu_page( $page_title='SLU Plugin Page',
@@ -115,19 +114,18 @@ function slu_save_network_options(){
                 	wp_clear_scheduled_hook('slu_sync_event');
                 }
 		wp_schedule_event(time(), 'hourly', 'slu_sync_event');
-
 	}
 	else
 	{
 		update_site_option("slu_cron_enable","false");
 		wp_clear_scheduled_hook('slu_sync_event');
 	}
-
 	
 	//check LDAP connection info:
 	$ldap_host=get_site_option('slu_ldap_host');
 	$ldap_rdn=get_site_option('slu_ldap_rdn');
 	$ldap_password=get_site_option('slu_ldap_pass');
+
 	sync_log("verifying connection to ".$ldap_host);
 	$L=ldap_connect("ldaps://".$ldap_host);
 	$R=ldap_bind($L,$ldap_rdn,$ldap_password);
@@ -169,16 +167,17 @@ function slu_init(){
 	<?php echo get_site_option('slu_updated_through','uninitialized');?></p><?php 
 	echo "<p>Next scheduled run at approx: ".date("Y-m-d H:i:s T",wp_next_scheduled ( 'slu_sync_event' ))."</p>";
 
+	// you can make the process start over with slu-reset
         if(isset($_GET['slu-reset']))
         {
                 delete_site_option('slu_updated_through');
 	}
+	// you can force a non-cron'ed run wish slu-process
 	if(isset($_GET['slu-process']))
 	{
 		slu_sync_users();
 	}
 }
-
 
 
 
@@ -206,63 +205,60 @@ function slu_deactivate(){
 add_action('slu_sync_event', 'slu_sync_users');
 
 
-
 // This function is the where the syncing actually happens
 function slu_sync_users(){ 
+
+        sync_log("----------------------------------------");
+        sync_log("begin LDAP user sync");
+        sync_log("----------------------------------------");
 
 	// this is to prevent WordPress from sending emails to users whose email addresses have changed
 	add_filter( 'send_email_change_email', '__return_false' );
 
+        // timezone set needed to get formatted time for LDAP filter
+        date_default_timezone_set('UTC');
+
 	$ldap_host=get_site_option('slu_ldap_host');
 	$ldap_rdn=get_site_option('slu_ldap_rdn');
 	$ldap_password=get_site_option('slu_ldap_pass');
-
-
-	sync_log("----------------------------------------");
-	sync_log("begin LDAP user sync");
-	sync_log("----------------------------------------");
-
-	// Determine where our last sync ended, 
-	$sync_window_start=get_site_option('slu_updated_through');
-	if($sync_window_start==false)  // first run, so we'll set the start to the begining of time and the end to two years ago
-	{
-		sync_log("First run...");
-		$sync_window_start="19700101000000";
-		$sync_window_end=date("YmdHis",time()-3600*24*365*2);
-	}
-	else
-	{	
-		$sync_window_start_time=convertLdapTimeStamp($sync_window_start);
-		$sync_window_end_time=$sync_window_start_time+3600*24*14;
-		$sync_window_end=date("YmdHis",$sync_window_end_time);
-        }
-	
 	$ldap_conn=ldap_connect("ldaps://".$ldap_host)
 		or die("Could not connect to $ldap_host");
 	if (ldap_bind($ldap_conn,$ldap_rdn,$ldap_password)){
-		//echo "successful bind\n";
+		sync_log("LDAP bind successful bind\n");
 	}
 	else{
-		//echo "bind failed\n";
-		sync_log("bind failed");
+		sync_log("bind failed:".ldap_error($ldap_conn));
+		die("Could not bind");
 	}
 
-	// timezone set needed to get formatted time for LDAP filter
-	date_default_timezone_set('UTC');
+        // Determine where our last sync ended, 
+        $sync_window_start=get_site_option('slu_updated_through');
+        if($sync_window_start==false)  // first run, so we'll set the start to the begining of time and the end to two years ago
+        {
+                sync_log("Looks like a first run... (or a reset)...");
+                $sync_window_start="19700101000000";
+                $sync_window_end=date("YmdHis",time()-3600*24*365*2);
+        }
+        else
+        {
+                $sync_window_start_time=convertLdapTimeStamp($sync_window_start);
+                $sync_window_end_time=$sync_window_start_time+3600*24*60;   // we grab 2 weeks worth of updates (this is arbitrary, but I wanted to avoid grabbing multi-thousands of records for each run).
+                $sync_window_end=date("YmdHis",$sync_window_end_time);
+        }
 
-	$filters=array();
 	$uid_filter="uid=*";
 	//$mail_filter="mail=*";
 	$start_filter="modifyTimeStamp>=".$sync_window_start.".0Z";
 	$end_filter="modifyTimeStamp<=".$sync_window_end.".0Z";
 
+        $filters=array();
 	array_push($filters, $uid_filter);
 	// excluding the mail filter, because we need to see everyone in order to mark old accounts as inactive
 	//array_push($filters, $mail_filter);
 	array_push($filters, $start_filter);
 	array_push($filters, $end_filter);
 
-
+	// Fields we get from LDAP - the last one is Tufts specific
 	$fields=array("uid","mail","givenName","sn","modifyTimeStamp","tuftsEduAtamsEligibility");
 	
 	$filter="(&";
@@ -270,7 +266,6 @@ function slu_sync_users(){
 		$filter.="(".$f.")";
 	$filter.=")";
 	
-
 	echo "<p>filter: ".$filter."</p>\n";
 	$begin=$before=microtime(true);
 
@@ -294,7 +289,6 @@ function slu_sync_users(){
 	// important to sort these records, so we process them sequentially according to modifyTimeStamp
 	usort($entries,"ldap_sort_comparer");
 	$before=microtime(true);
-
 	// Loop through all entries returned for our filter   foreach would be better here...
 	foreach ($entries as $entry)
 	{
@@ -325,7 +319,7 @@ function slu_sync_users(){
 			if($slu_user_status !== $ldap_user_status)
 			{
 				update_user_meta($user->ID,'slu_user_status',$ldap_user_status);
-				update_user_meat($user->ID,'slu_user_update_time',$ldap_modifyTimeStamp);
+				update_user_meta($user->ID,'slu_user_update_time',$ldap_modifyTimeStamp);
 				sync_log($user->user_login." status updated to: ".$ldap_user_status);
 			}
 
@@ -367,7 +361,6 @@ function slu_sync_users(){
 			}
 			else
 			{
-			//	echo "<p>existing user data match for ".$user->login."</p>\n";
 				$untouched_users++;
 			}		
 		}
@@ -423,7 +416,6 @@ function slu_sync_users(){
 	sync_log($modified_users." users modified");
 	sync_log($untouched_users." users untouched");
 	sync_log($failed_users." users failed to update");
-
 
 
 	//  If we're not caught up to current day, we'll reschedule another run in 10 seconds (10 seconds just in case 
@@ -486,7 +478,10 @@ function add_user_status($columns) {
 add_filter('manage_users_custom_column','add_user_status_column',10,3);
 function add_user_status_column($output,$column_name,$user_id)
 {
-        return "<strong>".get_user_meta($user_id,'slu_user_status',true)."</strong>";
+	$status=get_user_meta($user_id,'slu_user_status',true);
+	if(empty($status))
+		$status="undefined";
+        return "<strong>".$status."</strong>";
 }
 
 
