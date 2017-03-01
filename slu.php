@@ -242,7 +242,7 @@ function slu_sync_users(){
         else
         {
                 $sync_window_start_time=convertLdapTimeStamp($sync_window_start);
-                $sync_window_end_time=$sync_window_start_time+3600*24*60;   // we grab 2 weeks worth of updates (this is arbitrary, but I wanted to avoid grabbing multi-thousands of records for each run).
+                $sync_window_end_time=$sync_window_start_time+3600*24*30;   // we grab 30 days worth of updates (this is arbitrary, but I wanted to avoid grabbing multi-thousands of records for each run).
                 $sync_window_end=date("YmdHis",$sync_window_end_time);
         }
 
@@ -302,6 +302,11 @@ function slu_sync_users(){
 		$ldap_modifyTimeStamp=$entry["modifytimestamp"][0];
 		$ldap_eligibility=$entry["tuftseduatamseligibility"][0];  // beware of PHP LDAP downcasing attribute names
 
+		if (preg_match("/^former*|locked|ineligible/",$ldap_eligibility))
+			$ldap_user_status="inactive";
+		else
+			$ldap_user_status="active";
+
 		// check to see if user currently exists in the WP DB
 		$user=get_user_by('login',$ldap_uid);
 		$dirty=FALSE;
@@ -312,10 +317,6 @@ function slu_sync_users(){
 			// a user meta option "slu_user_status"
 
 	                $slu_user_status=get_user_meta($user->ID,'slu_user_status',true);
-			if (preg_match("/^former*|locked|ineligible/",$ldap_eligibility))
-				$ldap_user_status="inactive";
-			else
-				$ldap_user_status="active";
 			if($slu_user_status !== $ldap_user_status)
 			{
 				update_user_meta($user->ID,'slu_user_status',$ldap_user_status);
